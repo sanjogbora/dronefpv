@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Museum Patrol Path Designer</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background: #333
+        }
+
+        #container {
+            position: relative;
+            width: 100%;
+            height: 100vh
+        }
+
+        #container canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 0
+        }
+
+        /* UI panels */
+        #info,
+        #controls,
+        #pathControls,
+        #pathList,
+        #simulationControls {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 100;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.5)
+        }
+
+        #info {
+            top: 10px;
+            left: 10px;
+            max-width: 300px
+        }
+
+        #controls {
+            top: 10px;
+            right: 10px
+        }
+
+        #pathControls {
+            bottom: 10px;
+            left: 10px
+        }
+
+        #pathList {
+            bottom: 10px;
+            right: 10px;
+            min-width: 200px;
+            max-height: 200px;
+            overflow-y: auto
+        }
+
+        #simulationControls {
+            top: 150px;
+            right: 10px
+        }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+            margin: 10px 0
+        }
+
+        label {
+            width: 110px;
+            margin-right: 10px;
+            display: inline-block
+        }
+
+        input[type=range] {
+            flex: 1;
+            margin-right: 10px
+        }
+
+        button {
+            background: #4CAF50;
+            border: none;
+            color: #fff;
+            padding: 8px 12px;
+            margin: 5px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: .2s
+        }
+
+        button:hover {
+            background: #45a049
+        }
+
+        button:disabled {
+            background: #999;
+            cursor: not-allowed
+        }
+
+        .path-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 5px 0;
+            padding: 5px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px
+        }
+
+        .path-item span {
+            margin-right: 5px
+        }
+
+        .path-item button {
+            padding: 3px 6px;
+            font-size: .8em;
+            margin-left: 5px
+        }
+
+        #pathHeightValue,
+        #heightValue,
+        #simSpeedValue {
+            min-width: 25px;
+            text-align: right;
+            display: inline-block
+        }
+    </style>
+</head>
+
+<body>
+    <div id="container">
+        <div id="info">
+            <h3>Museum Patrol Path Designer</h3>
+            <p>Left click: Add path point</p>
+            <p>Right click: Remove last point</p>
+            <p>Mouse wheel: Zoom in/out</p>
+            <p>Left mouse drag: Rotate view</p>
+            <p>Middle mouse/Shift+drag: Pan view</p>
+        </div>
+        <div id="controls">
+            <button id="toggleWalls">Hide Walls</button>
+            <button id="toggleFloor">Hide Floor</button>
+            <button id="resetCamera">Reset Camera</button>
+            <div class="slider-container">
+                <label for="heightSlider">Wall Height:</label>
+                <input type="range" id="heightSlider" min="0.1" max="5" step="0.1" value="3">
+                <span id="heightValue">3.0</span>
+            </div>
+        </div>
+        <div id="pathControls">
+            <button id="newPath">New Path</button>
+            <button id="completePath">Complete Path</button>
+            <button id="clearPath">Clear Current Path</button>
+            <div>
+                <label for="pathColor">Path Color:</label>
+                <input type="color" id="pathColor" value="#ff0000">
+            </div>
+            <div class="slider-container">
+                <label for="pathHeight">Path Height:</label>
+                <input type="range" id="pathHeight" min="0.1" max="3" step="0.1" value="0.5">
+                <span id="pathHeightValue">0.5</span>
+            </div>
+        </div>
+        <div id="pathList">
+            <h3>Patrol Paths</h3>
+            <div id="pathItems"></div>
+        </div>
+        <div id="simulationControls">
+            <h3>Simulation</h3>
+            <button id="startSimulation">Start Simulation</button>
+            <button id="pauseSimulation" disabled>Pause</button>
+            <button id="stopSimulation" disabled>Stop</button>
+            <div class="slider-container">
+                <label for="simSpeed">Speed:</label>
+                <input type="range" id="simSpeed" min="0.1" max="5" step="0.1" value="1">
+                <span id="simSpeedValue">1.0</span>
+            </div>
+            <div>
+                <label for="showAllPaths">Show All Paths:</label>
+                <input type="checkbox" id="showAllPaths" checked>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        const app = {
+            // Three.js essentials
+            scene: null, camera: null, renderer: null, controls: null, clock: null,
+            raycaster: new THREE.Raycaster(), mouse: new THREE.Vector2(),
+
+            // Layout & paths
+            floor: null, floorGrid: null, walls: [], exhibits: [],
+            currentPath: { points: [], line: null, markers: [], color: '#ff0000', height: 0.5, complete: false },
+            paths: [], pathId: 0,
+
+            // Guards (unused for camera-fpv, but left intact)
+            guards: [],
+
+            // Simulation state
+            simulation: {
+                active: false,
+                paused: false,
+                speed: 1,
+                // FPV fields:
+                path: null,
+                distance: 0,
+                segmentLengths: [],
+                cumulative: [],
+                totalLength: 0
+            },
+
+            init() {
+                this.clock = new THREE.Clock();
+                this.scene = new THREE.Scene();
+                this.scene.background = new THREE.Color(0x333333);
+
+                // Camera
+                this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                this.camera.position.set(0, 15, 20);
+                this.camera.lookAt(0, 0, 0);
+
+                // Renderer
+                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.shadowMap.enabled = true;
+                document.getElementById('container').appendChild(this.renderer.domElement);
+
+                // Lights
+                this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+                const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+                dir.position.set(15, 25, 10);
+                dir.castShadow = true;
+                this.scene.add(dir);
+
+                // Controls
+                this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
+                this.controls.enableDamping = true;
+                this.controls.dampingFactor = 0.1;
+                this.controls.screenSpacePanning = true;
+
+                // Build museum
+                this.createMuseumLayout();
+
+                // Events
+                window.addEventListener('resize', () => this.onWindowResize());
+                this.renderer.domElement.addEventListener('pointerdown', e => this.onMouseDown(e), { capture: true });
+                this.renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
+
+                // UI bindings
+                document.getElementById('toggleWalls').onclick = () => this.toggleWalls();
+                document.getElementById('toggleFloor').onclick = () => this.toggleFloor();
+                document.getElementById('resetCamera').onclick = () => this.controls.reset();
+                document.getElementById('heightSlider').oninput = () => this.updateWallHeight();
+                document.getElementById('newPath').onclick = () => this.newPath();
+                document.getElementById('completePath').onclick = () => this.completePath();
+                document.getElementById('clearPath').onclick = () => this.clearCurrentPath();
+                document.getElementById('pathColor').oninput = () => this.updatePathColor();
+                document.getElementById('pathHeight').oninput = () => this.updatePathHeight();
+                document.getElementById('startSimulation').onclick = () => this.startSimulation();
+                document.getElementById('pauseSimulation').onclick = () => this.pauseSimulation();
+                document.getElementById('simSpeed').oninput = () => this.updateSimulationSpeed();
+                document.getElementById('showAllPaths').onchange = () => this.toggleAllPathsVisibility();
+                document.getElementById('stopSimulation').onclick = () => this.stopSimulation();
+
+                // Init UI readouts
+                this.updateWallHeight();
+                this.updatePathHeight();
+                this.updateSimulationSpeed();
+
+                // Start render loop
+                this.animate();
+            },
+
+            createMuseumLayout() {
+                // Floor
+                const fg = new THREE.PlaneGeometry(40, 30);
+                const fm = new THREE.MeshStandardMaterial({ color: 0xcccccc, side: THREE.DoubleSide, roughness: 0.8 });
+                this.floor = new THREE.Mesh(fg, fm);
+                this.floor.rotation.x = -Math.PI / 2;
+                this.floor.receiveShadow = true;
+                this.scene.add(this.floor);
+
+                // Grid
+                this.floorGrid = new THREE.GridHelper(40, 40, 0x888888, 0x444444);
+                this.floorGrid.position.y = 0.01;
+                this.scene.add(this.floorGrid);
+
+                // Walls & pedestals
+                const h = parseFloat(document.getElementById('heightSlider').value);
+                const c = 0xAAAAAA, d = 0.2;
+                [[0, 15, 40 + d, d], [0, -15, 40 + d, d], [-20, 0, d, 30 + d], [20, 0, d, 30 + d], [-10, 0, d, 20], [0, 5, 20, d], [0, -5, 20, d], [10, 0, d, 20]]
+                    .forEach(([x, z, w, dp]) => this.createWall(x, z, w, dp, h, c));
+
+                // A few pedestals
+                [[-15, 10], [-5, 10], [5, 0], [15, 0], [-15, -10], [-5, -10]]
+                    .forEach(([x, z]) => this.createPedestal(x, z, 1, 1, 1, 0x555555));
+            },
+
+            createWall(x, z, w, dp, h, color) {
+                const geo = new THREE.BoxGeometry(w, h, dp);
+                const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0.1 });
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.position.set(x, h / 2, z);
+                mesh.castShadow = mesh.receiveShadow = true;
+                this.scene.add(mesh);
+                this.walls.push(mesh);
+            },
+
+            createPedestal(x, z, w, d, h, color) {
+                const geo = new THREE.BoxGeometry(w, h, d);
+                const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6 });
+                const ped = new THREE.Mesh(geo, mat);
+                ped.position.set(x, h / 2, z);
+                ped.castShadow = ped.receiveShadow = true;
+                this.scene.add(ped);
+                this.walls.push(ped);
+                const exhibit = new THREE.Mesh(
+                    new THREE.IcosahedronGeometry(0.4, 0),
+                    new THREE.MeshStandardMaterial({
+                        color: new THREE.Color(Math.random(), Math.random(), Math.random()),
+                        roughness: 0.2, metalness: 0.8
+                    })
+                );
+                exhibit.position.set(x, h + 0.4, z);
+                exhibit.castShadow = true;
+                this.scene.add(exhibit);
+                this.exhibits.push(exhibit);
+            },
+
+            onWindowResize() {
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+            },
+
+            onMouseDown(e) {
+                if (this.simulation.active) return;
+                // right-click remove
+                if (e.button === 2 && !this.currentPath.complete) {
+                    e.preventDefault();
+                    return this.removeLastPoint();
+                }
+                if (e.button !== 0) return;
+                const r = this.renderer.domElement.getBoundingClientRect();
+                this.mouse.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+                this.mouse.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+                this.raycaster.setFromCamera(this.mouse, this.camera);
+                const hits = this.raycaster.intersectObject(this.floor);
+                if (hits.length) this.addPointToPath(hits[0].point);
+            },
+
+            addPointToPath(pt) {
+                pt.y = this.currentPath.height;
+                this.currentPath.points.push(pt.clone());
+                this.updatePathVisuals();
+            },
+
+            removeLastPoint() {
+                this.currentPath.points.pop();
+                this.updatePathVisuals();
+            },
+
+            updatePathVisuals() {
+                // remove line
+                if (this.currentPath.line) {
+                    this.scene.remove(this.currentPath.line);
+                    this.currentPath.line.geometry.dispose();
+                }
+                // draw line if ≥2
+                if (this.currentPath.points.length >= 2) {
+                    const geo = new THREE.BufferGeometry().setFromPoints(this.currentPath.points);
+                    const mat = new THREE.LineBasicMaterial({ color: this.currentPath.color });
+                    this.currentPath.line = new THREE.Line(geo, mat);
+                    this.scene.add(this.currentPath.line);
+                } else {
+                    this.currentPath.line = null;
+                }
+                // clear markers
+                this.currentPath.markers.forEach(m => {
+                    this.scene.remove(m);
+                    m.geometry.dispose();
+                    m.material.dispose();
+                });
+                this.currentPath.markers = [];
+                // draw markers
+                const geo = new THREE.SphereGeometry(0.15, 12, 8);
+                const mat = new THREE.MeshBasicMaterial({ color: this.currentPath.color });
+                this.currentPath.points.forEach(p => {
+                    const m = new THREE.Mesh(geo, mat);
+                    m.position.copy(p);
+                    this.scene.add(m);
+                    this.currentPath.markers.push(m);
+                });
+            },
+
+            completePath() {
+                if (this.currentPath.points.length < 2) return alert("Need at least 2 points");
+                // close if ≥3
+                const pts = this.currentPath.points;
+                if (pts.length >= 3 && pts[0].distanceTo(pts[pts.length - 1]) > 0.2) {
+                    pts.push(pts[0].clone());
+                    this.updatePathVisuals();
+                }
+                this.currentPath.complete = true;
+                const info = {
+                    id: ++this.pathId,
+                    name: `Path ${this.pathId}`,
+                    points: [...pts],
+                    color: this.currentPath.color,
+                    height: this.currentPath.height,
+                    line: this.currentPath.line,
+                    markers: this.currentPath.markers,
+                    visible: true
+                };
+                this.paths.push(info);
+                this.updatePathList();
+                // reset currentPath
+                this.currentPath = {
+                    points: [],
+                    line: null,
+                    markers: [],
+                    color: document.getElementById('pathColor').value,
+                    height: parseFloat(document.getElementById('pathHeight').value),
+                    complete: false
+                };
+                alert(`${info.name} saved!`);
+            },
+
+            newPath() {
+                if (this.simulation.active) return;
+                if (this.currentPath.points.length && !this.currentPath.complete) {
+                    if (!confirm("Discard current?")) return;
+                }
+                this.clearCurrentPath();
+            },
+
+            clearCurrentPath() {
+                if (this.currentPath.line) {
+                    this.scene.remove(this.currentPath.line);
+                    this.currentPath.line.geometry.dispose();
+                }
+                this.currentPath.markers.forEach(m => {
+                    this.scene.remove(m);
+                    m.geometry.dispose(); m.material.dispose();
+                });
+                this.currentPath = {
+                    points: [],
+                    line: null,
+                    markers: [],
+                    color: this.currentPath.color,
+                    height: this.currentPath.height,
+                    complete: false
+                };
+            },
+
+            updatePathList() {
+                const c = document.getElementById('pathItems');
+                c.innerHTML = '';
+                this.paths.forEach(p => {
+                    const div = document.createElement('div');
+                    div.className = 'path-item';
+                    div.innerHTML = `
+            <div><span style="color:${p.color}">■</span> ${p.name}</div>
+            <div>
+              <button data-id="${p.id}" class="toggle-path">${p.visible ? 'Hide' : 'Show'}</button>
+              <button data-id="${p.id}" class="delete-path">X</button>
+            </div>`;
+                    c.appendChild(div);
+                });
+                c.querySelectorAll('.toggle-path').forEach(b => {
+                    b.onclick = e => this.togglePathVisibility(+e.target.dataset.id);
+                });
+                c.querySelectorAll('.delete-path').forEach(b => {
+                    b.onclick = e => { if (confirm("Delete?")) this.deletePath(+e.target.dataset.id) };
+                });
+            },
+
+            togglePathVisibility(id) {
+                const p = this.paths.find(x => x.id === id);
+                if (!p) return;
+                p.visible = !p.visible;
+                if (p.line) p.line.visible = p.visible;
+                p.markers.forEach(m => m.visible = p.visible);
+                this.updatePathList();
+            },
+
+            toggleAllPathsVisibility() {
+                const show = document.getElementById('showAllPaths').checked;
+                this.paths.forEach(p => {
+                    p.visible = show;
+                    if (p.line) p.line.visible = show;
+                    p.markers.forEach(m => m.visible = show);
+                });
+                this.updatePathList();
+            },
+
+            deletePath(id) {
+                const idx = this.paths.findIndex(x => x.id === id);
+                if (idx < 0) return;
+                const p = this.paths[idx];
+                if (p.line) {
+                    this.scene.remove(p.line);
+                    p.line.geometry.dispose();
+                }
+                p.markers.forEach(m => {
+                    this.scene.remove(m);
+                    m.geometry.dispose(); m.material.dispose();
+                });
+                this.paths.splice(idx, 1);
+                this.updatePathList();
+            },
+
+            updatePathColor() {
+                const c = document.getElementById('pathColor').value;
+                this.currentPath.color = c;
+                if (this.currentPath.line) this.currentPath.line.material.color.set(c);
+                this.currentPath.markers.forEach(m => m.material.color.set(c));
+            },
+
+            updatePathHeight() {
+                const h = parseFloat(document.getElementById('pathHeight').value);
+                document.getElementById('pathHeightValue').textContent = h.toFixed(1);
+                this.currentPath.height = h;
+                this.currentPath.points.forEach(pt => pt.y = h);
+                this.updatePathVisuals();
+            },
+
+            toggleWalls() {
+                this.walls.forEach(w => w.visible = !w.visible);
+                document.getElementById('toggleWalls').textContent = this.walls[0].visible ? 'Hide Walls' : 'Show Walls';
+            },
+
+            toggleFloor() {
+                this.floorGrid.visible = !this.floorGrid.visible;
+                document.getElementById('toggleFloor').textContent = this.floorGrid.visible ? 'Hide Floor' : 'Show Floor';
+            },
+
+            updateWallHeight() {
+                const h = parseFloat(document.getElementById('heightSlider').value);
+                document.getElementById('heightValue').textContent = h.toFixed(1);
+                this.walls.forEach(w => {
+                    const orig = w.geometry.parameters.height;
+                    w.scale.y = h / orig;
+                    w.position.y = h / 2;
+                });
+            },
+
+            updateSimulationSpeed() {
+                const s = parseFloat(document.getElementById('simSpeed').value);
+                document.getElementById('simSpeedValue').textContent = s.toFixed(1);
+                this.simulation.speed = s;
+            },
+
+            startSimulation() {
+                if (this.simulation.active && !this.simulation.paused) return;
+                if (this.simulation.active && this.simulation.paused) {
+                    return this.pauseSimulation();
+                }
+
+                // pick first visible, completed path
+                const ready = this.paths.filter(p => p.visible && p.points.length >= 2);
+                if (!ready.length) return alert("Draw & show at least one path");
+                const path = ready[0];
+
+                // build segments if needed
+                const pts = path.points;
+                const seg = [], cum = [0];
+                let tot = 0;
+                for (let i = 0; i < pts.length - 1; i++) {
+                    const L = pts[i].distanceTo(pts[i + 1]);
+                    seg.push(L);
+                    tot += L; cum.push(tot);
+                }
+
+                // store into simulation
+                this.simulation.path = path;
+                this.simulation.segmentLengths = seg;
+                this.simulation.cumulative = cum;
+                this.simulation.totalLength = tot;
+                this.simulation.distance = 0;
+                this.simulation.active = true;
+                this.simulation.paused = false;
+
+                // disable orbit controls
+                this.controls.enabled = false;
+
+                document.getElementById('startSimulation').disabled = true;
+                document.getElementById('pauseSimulation').disabled = false;
+                document.getElementById('stopSimulation').disabled = false;
+                this.togglePathEditing(false);
+            },
+
+            pauseSimulation() {
+                if (!this.simulation.active) return;
+                this.simulation.paused = !this.simulation.paused;
+                document.getElementById('pauseSimulation').textContent = this.simulation.paused ? 'Resume' : 'Pause';
+                if (!this.simulation.paused) {
+                    this.controls.enabled = false;
+                }
+            },
+
+            stopSimulation() {
+                // not exposed, but could be wired if needed
+                if (!this.simulation.active) return;
+                this.simulation.active = false;
+                this.simulation.paused = false;
+                this.controls.enabled = true;
+                document.getElementById('startSimulation').disabled = false;
+                document.getElementById('pauseSimulation').disabled = true;
+                document.getElementById('pauseSimulation').textContent = 'Pause';
+                document.getElementById('stopSimulation').disabled = true;    // ← disable Stop
+                this.togglePathEditing(true);
+            },
+
+            animate() {
+                requestAnimationFrame(() => this.animate());
+                const delta = this.clock.getDelta();
+
+                // FPV camera update
+                if (this.simulation.active && !this.simulation.paused) {
+                    const sim = this.simulation;
+                    // advance
+                    sim.distance = (sim.distance + delta * sim.speed) % sim.totalLength;
+
+                    // find segment index
+                    let idx = sim.cumulative.findIndex(c => c > sim.distance) - 1;
+                    if (idx < 0) idx = sim.segmentLengths.length - 1;
+                    const d0 = sim.cumulative[idx];
+                    const t = (sim.distance - d0) / sim.segmentLengths[idx];
+                    const P0 = sim.path.points[idx], P1 = sim.path.points[idx + 1];
+
+                    // position
+                    const pos = new THREE.Vector3().lerpVectors(P0, P1, t);
+                    // slightly raise camera above path height
+                    pos.y += 0.2;
+                    this.camera.position.copy(pos);
+
+                    // look a bit ahead
+                    let ahead = (sim.distance + 1) % sim.totalLength;
+                    let idx2 = sim.cumulative.findIndex(c => c > ahead) - 1;
+                    if (idx2 < 0) idx2 = sim.segmentLengths.length - 1;
+                    const d1 = sim.cumulative[idx2];
+                    const t1 = (ahead - d1) / sim.segmentLengths[idx2];
+                    const A0 = sim.path.points[idx2], A1 = sim.path.points[idx2 + 1];
+                    const look = new THREE.Vector3().lerpVectors(A0, A1, t1);
+                    this.camera.lookAt(look);
+                }
+
+                this.controls.update();
+                this.renderer.render(this.scene, this.camera);
+            }
+        };
+
+        window.addEventListener('load', () => app.init());
+    </script>
+</body>
+
+</html>
